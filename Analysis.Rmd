@@ -1,0 +1,584 @@
+---
+title: "Bike Rental Prediction Analysis"
+output: html_document
+date: "2023-08-05"
+---
+
+```{r }
+library(ggplot2)
+library(ggExtra)
+library(tidyverse)
+library(knitr)
+library(psych)
+library(kableExtra)
+library(lubridate)
+options(warn = -1)
+library(glmnet)
+library(nlme)
+library(zoo)
+library(stargazer)
+library(modelr)
+```
+
+```{r }
+# Read in data
+bikedata <- read_csv("/Users/raywu/Desktop/day.csv")
+bikedata$week <- week(bikedata$dteday)
+
+# Display a random sample of 5 rows, styled and in landscape format
+bikedata %>% 
+  sample_n(5) %>% 
+  kable(digits = 2) %>%
+  kable_styling() %>%
+  landscape()
+```
+
+```{r }
+# Formatting numerical variables
+bikedata$temp <- as.numeric(bikedata$temp)
+bikedata$perceived_temp <- as.numeric(bikedata$atemp)
+bikedata$atemp <- NULL
+bikedata$total_rentals <- as.numeric(bikedata$cnt)
+bikedata$cnt <- NULL
+bikedata$humidity <- as.numeric(bikedata$humidity)
+bikedata$windspeed <- as.numeric(bikedata$windspeed)
+bikedata$days <- as.numeric(bikedata$instant)
+bikedata$instant <- NULL
+
+# Formatting categorical variables
+bikedata$holiday <- as.factor(bikedata$holiday)
+bikedata$workingday <- as.factor(bikedata$workingday)
+bikedata$weekday <- as.factor(bikedata$weekday)
+bikedata$month <- as.factor(bikedata$mnth)
+bikedata$mnth <- NULL
+bikedata$season <- as.factor(bikedata$season)
+bikedata$weather <- as.factor(bikedata$weathersit)
+bikedata$weathersit <- NULL
+
+weekday_names <- c("Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday")
+# Transform the DayNumber column to weekday names
+bikedata$weekday <- factor(bikedata$weekday, levels = 0:6, labels = weekday_names)
+
+season_names <- c("Spring", "Summer", "Autumn", "Winter")
+# Transform the season column to season names
+bikedata$season <- factor(bikedata$season, levels = 1:4, labels = season_names)
+
+weather_names <- c("Good", "Mild", "Bad")
+# Transform the weather column to weather names
+bikedata$weather <- factor(bikedata$weather, levels = 1:3, labels = weather_names)
+```
+
+```{r }
+t_min = -8
+t_max = 39
+# Transform the normalized temperatures back to real temperatures
+bikedata$temp <- bikedata$temp * (t_max - t_min) + t_min
+
+t_min = -16
+t_max = 50
+# Transform the normalized feels like temperatures back to real temperatures
+bikedata$perceived_temp <- bikedata$perceived_temp * (t_max - t_min) + t_min
+
+# Transform the normalized windspeed back to real windspeed
+bikedata$windspeed <- bikedata$windspeed * 67
+
+## Transform the normalized humidity back to real humidity
+bikedata$humidity <- bikedata$humidity * 100
+
+# Plotting the data
+library(ggplot2)
+library(dplyr)
+bikedata %>% 
+  filter(yr == 0) %>% 
+  ggplot(aes(x = perceived_temp, y = total_rentals, color = weather)) + 
+  geom_point() + 
+  theme_minimal() + 
+  labs(title = "", X = "Perceived Temperature (°C)", y = "Daily Total Rentals") + 
+  scale_color_manual(values = c("skyblue2", "dodgerblue3", 'black')) +
+  theme_minimal() + 
+  theme(panel.border = element_rect(colour = "grey", fill = NA, size = 1)) + 
+  theme(legend.position = c(0.18,0.75))
+```
+
+```{r }
+# Plot 1
+bikedata %>% 
+  filter(yr == 0) %>% 
+  ggplot(aes(x = perceived_temp, y = total_rentals, color = weather)) + 
+  geom_point() + 
+  theme_minimal() + 
+  labs(title = "Perceived Temperature vs Daily Total Rentals", 
+       x = "Perceived Temp (°C)", 
+       y = "Daily Total Rentals") + 
+  scale_color_manual(values = c("skyblue2", "dodgerblue3", 'black')) + 
+  theme_minimal() + 
+  theme(panel.border = element_rect(colour = "grey", fill = NA, size = 1)) + 
+  theme(legend.position = c(0.18,0.75))
+
+# Plot 2
+bikedata %>% 
+  ggplot() + 
+  geom_boxplot(aes(x = weather, y = total_rentals), fill = 'steelblue2') + 
+  theme_minimal() + 
+  theme(axis.title.x = element_blank()) + 
+  theme(panel.border = element_rect(colour = "grey", fill = NA, size = 1)) + 
+  ylab('Bike User Count') + 
+  ggtitle('Boxplot of Total Rentals Per Day against Weather')
+
+# Plot 3
+ggplot(bikedata %>% filter(yr == 0), aes(x = dteday, y = total_rentals)) + 
+  geom_point(aes(color = perceived_temp), alpha = 0.9) + 
+  geom_smooth(color = 'black', alpha = 0.5) + 
+  theme_minimal() + 
+  labs(title = "Date vs Daily Total Rentals", 
+       y = 'Daily Total Rentals', 
+       x = 'Date', 
+       color = 'Perceived Temp (°C)', 
+       shape = 'Weather') + 
+  theme(panel.border = element_rect(colour = "grey", fill = NA, size = 1)) + 
+  theme(legend.position = c(0.18,0.75))
+
+# Plot 4
+bikedata %>% 
+  filter(yr == 0) %>% 
+  ggplot() + 
+  geom_boxplot(aes(x = season, y = total_rentals), fill = 'steelblue2') + 
+  theme_minimal() + 
+  theme(axis.title.x = element_blank()) + 
+  theme(panel.border = element_rect(colour = "grey", fill = NA, size = 1)) + 
+  ylab('Daily Total Rentals')
+```
+
+```{r }
+# ANOVA and Tukey for perceived temp and season
+anova_result <- aov(perceived_temp ~ season, data = bikedata %>% filter(yr == 0))
+summary(anova_result)
+posthoc_result <- TukeyHSD(anova_result)
+posthoc_result
+```
+
+```{r }
+# ANOVA for total rentals ~ weather
+anova_result <- aov(total_rentals ~ weather, data = bikedata %>% filter(yr == 0))
+summary(anova_result)
+```
+
+```{r }
+# Plot
+bikedata %>% 
+  filter(yr == 0) %>% 
+  ggplot() + 
+  geom_boxplot(aes(x = season, y = perceived_temp), fill = 'steelblue2') + 
+  theme_minimal() + 
+  theme(axis.title.x = element_blank()) +
+  theme(panel.border = element_rect(colour = "grey", fill=NA, size=1)) + 
+  ylab('Perceived Temperature')
+```
+
+```{r }
+# Boxplot by month
+data_weekly <- bikedata %>% filter(yr == 0) %>% select(c('casual', 'registered', 'month'))
+data_long <- data_weekly %>% pivot_longer(cols = c('casual', 'registered'), names_to = "variable", values_to = "value")
+ggplot(data_long, aes(month, value)) + 
+  geom_boxplot(aes(fill = variable)) + 
+  xlab("Month") + 
+  ylab("Daily Total Rentals") + 
+  theme_minimal() + 
+  scale_fill_manual(values = c("registered" = "steelblue2", "casual" = "dodgerblue4")) + 
+  theme(panel.border = element_rect(colour = "grey", fill=NA, size=1)) + 
+  theme(legend.position = c(0.16,0.77))
+```
+
+```{r }
+# Boxplot by weekday
+data_weekly <- bikedata %>% filter(yr == 0) %>% select(c('casual', 'registered', 'weekday'))
+data_long <- data_weekly %>% pivot_longer(cols = c('casual', 'registered'), names_to = "variable", values_to = "value")
+ggplot(data_long, aes(weekday, value)) + 
+  geom_boxplot(aes(fill = variable)) + 
+  xlab("Weekday") + 
+  ylab("Daily Total Rentals") + 
+  theme_minimal() + 
+  scale_fill_manual(values = c("registered" = "steelblue2", "casual" = "dodgerblue4")) + 
+  theme(panel.border = element_rect(colour = "grey", fill=NA, size=1)) + 
+  theme(legend.position = c(0.14,0.85))
+```
+
+```{r }
+# Boxplot by season
+data_weekly <- bikedata %>% filter(yr == 0) %>% select(c('casual', 'registered', 'season'))
+data_long <- data_weekly %>% pivot_longer(cols = c('casual', 'registered'), names_to = "variable", values_to = "value")
+ggplot(data_long, aes(season, value)) + 
+  geom_boxplot(aes(fill = variable)) + 
+  xlab("Season") + 
+  ylab("Daily Total Rentals") + 
+  theme_minimal() + 
+  scale_fill_manual(values = c("registered" = "steelblue2", "casual" = "dodgerblue4")) + 
+  theme(panel.border = element_rect(colour = "grey", fill=NA, size=1)) + 
+  theme(legend.position = c(0.14,0.85))
+```
+
+```{r }
+# Scatterplot matrix
+corr_data <- bikedata %>% 
+  filter(yr == 0) %>% 
+  select(total_rentals, registered, casual, perceived_temp, temp, days, windspeed, humidity, weather, workingday)
+
+custom_upper <- function(data, mapping, ...){
+  p <- ggplot() + theme_void()
+  return(p)
+}
+
+custom_diag <- function(data, mapping, ...){
+  p <- ggplot(data = data, mapping = mapping) + geom_boxplot(outlier.shape = NA, alpha = 0.5, size = 0.3)
+  return(p)
+}
+
+plot_stat <- theme_minimal() +
+  theme(
+    axis.line = element_blank(),
+    panel.background = element_blank(),
+    plot.title = element_text(size = 10, color = "grey20"),
+    panel.grid.minor = element_blank(),
+    axis.title = element_text(size = 10, color = "grey20"),
+    panel.grid.major = element_blank(),
+    legend.key = element_blank(),
+    legend.title = element_text(size = 6, color = "grey30"),
+    legend.text = element_text(size = 6, color = "grey30")
+  )
+
+corr_plot <- ggpairs(
+  corr_data,
+  lower = list(
+    combo = custom_diag,
+    continuous = wrap("cor", size = 5)
+  ),
+  upper = list(
+    combo = wrap("points", alpha = 0.1, size = 0.01),
+    continuous = wrap("points", alpha = 0.1, size = 0.01),
+    discrete = wrap("points", alpha = 0.1, size = 0.01)
+  ),
+  diag = list(
+    continuous = wrap("densityDiag", alpha = 0.5)
+  ), 
+  progress = FALSE
+) 
+
+corr_plot + plot_stat +
+  theme(
+    text = element_text(size = 11),
+    axis.text.x = element_text(size = 8, angle = 90),
+    axis.text.y = element_text(size = 8, angle = 0),
+    axis.ticks = element_blank(),
+    axis.title.y.right = element_text(size = 8, angle = 45, margin = margin(t = 0, r = 0, b = 0, l = 2))
+  )
+```
+
+```{r }
+# Box Cox Transformation
+boxcox(windspeed~1, data = bikedata %>% filter(yr ==0), lambda = seq(-1, 2, by = 0.1))
+boxcox(casual~1, data = bikedata %>% filter(yr == 0), lambda = seq(-1, 2, by = 0.1))
+#boxcox(perceived_temp+20~1, data = bikedata %>% filter(yr == 0), lambda = seq(-1, 2, by = 0.1))
+#boxcox(humidity+20^1, data = bikedata %>% filter( yr == 0), lambda = seq(-1, 2, by = 0.1))
+#boxcox(total rentals~1, data = bikedata %>% filter(yr ==0), lambda = seq(-1, 2, by = 0.1))
+
+# Training and validation data plot
+data_for_training <- bikedata[,c('yr','registered','casual', 'total_rentals', 'weather', 'perceived_temp', 'humidity', 'windspeed', 'weekday', "workingday","days")]
+data_for_training <- data.frame(model.matrix(~.-1, data_for_training))
+Train_data <- data_for_training %>% filter(yr == 0)
+Train_data$perceived_temp2 = Train_data$perceived_temp^2
+Train_data$perceived_temp3 = Train_data$perceived_temp^3
+Train_data$sqrt_windspeed = sqrt(Train_data$windspeed)
+Train_data$windspeed = NULL
+X_train <- Train_data[,5:ncol(Train_data)]
+y_train <- Train_data$total_rentals
+
+Test_data <- data_for_training %>% filter(yr == 1)
+Test_data$perceived_temp2 = Test_data$perceived_temp^2
+Test_data$perceived_temp3 = Test_data$perceived_temp^3
+Test_data$sqrt_windspeed = sqrt(Test_data$windspeed)
+Test_data$windspeed = NULL
+Test_data <- Test_data %>% slice(-303)
+X_test <- Test_data[,5:ncol(Test_data)]
+Y_test <- Test_data$total_rentals
+```
+
+```{r }
+# Time-series Cross-Validation for Lasso
+time_series_cv_lasso <- function(x, y, alpha = 1, n_folds = 10) {
+  n <- nrow(x)
+  fold_size <- floor(n / n_folds)
+  lambda_result <- list()
+  lambda_list <- cv.glmnet(as.matrix(x), y, nlambda = 100)$lambda
+  for (lambda in lambda_list) {
+    result <- list()
+    for (fold in seq_len(n_folds)) {
+      train_end <- fold * fold_size
+      x_train <- x[1:train_end,]
+      y_train <- y[1:train_end]
+      x_test <- x[(train_end+1):nrow(x),]
+      y_test <- y[(train_end+1):nrow(x)]
+      cv_fit <- cv.glmnet(x_train, y_train)
+      lasso_model <- glmnet(x_train, y_train, alpha = 1, lambda = lambda)
+      preds <- predict(lasso_model, newx = x_test)
+      mse <- mean((preds - y_test)^2)
+      result <- append(result, mse)
+    }
+    lambda_result <- append(lambda_result, mean(unlist(result)))
+  }
+  return(data.frame(lambda_list, unlist(lambda_result)))
+}
+
+result <- time_series_cv_lasso(as.matrix(X_train), as.matrix(y_train))
+
+# Lasso model
+lasso_test <- glmnet(X_train, y_train, alpha = 1, family = "gaussian", standardize = TRUE)
+plot(lasso_test)
+```
+
+```{r }
+# Fit lasso model
+lasso_model <- glmnet(X_train, y_train, alpha = 1, lambda = 0.103, family = "gaussian", standardize = TRUE)
+res <- data.frame(as.matrix(coef(lasso_model, lasso_model$lambda.1se))) %>% filter(V1 != 0)
+write.csv(res, "/Users/raywu/Desktop/output.csv", row.names = TRUE)
+
+# Lasso diagnostic
+preds <- predict(lasso_model, newx = as.matrix(X_train))
+residuals <- y_train - preds
+plot(preds, residuals,
+     xlab = "Predicted Values",
+     ylab = "Residuals",
+     main = "Residuals vs Predicted Values",
+     col = "steelblue2")
+abline(h = 0, col = "dodgerblue4", lty = 2)
+hist(residuals,
+     main = "Histogram of Residuals",
+     xlab = "Residuals",
+     col = "skyblue",
+     border = "white")
+box()
+
+# OLS model for total rentals
+model_2 <- lm(total_rentals ~ perceived_temp + perceived_temp2 + perceived_temp3 + 
+              perceived_temp * weather_Bad + sqrt_windspeed + days + humidity + 
+              weather_Mild + weather_Bad, data = Train_data[-c(239,358), ])
+summary(model_2)
+
+# Plot added variable plot for quadratic and cubic term
+car::avPlots(model_2, "perceived_temp3", main = "", col = 'steelblue')
+car::avPlots(model_2, "perceived_temp2", main = "", col = 'steelblue')
+```
+
+```{r }
+# All added and marginal model plot
+car::avPlots(model_2)
+car::mmps(model_2)
+
+# OLS model for total rentals diagnostic
+standardized_residuals <- rstandard(model_2)
+hist(standardized_residuals,
+     main = "Histogram of Standardized Residuals",
+     xlab = "Residuals",
+     col = "skyblue",
+     border = "white")
+box()
+
+sqrt_standardized_residuals <- sqrt(abs(standardized_residuals))
+fitted_values <- fitted(model_2)
+
+qqnorm(standardized_residuals, main = "Q-Q Plot of Residuals", col = 'steelblue2')
+qqline(standardized_residuals, col = 'dodgerblue4')
+
+season <- bikedata %>% filter(yr == 0) %>% slice(-239, -358) %>% pull(season)
+data <- data.frame(fit = fitted_values, resid = standardized_residuals, season = season)
+
+ggplot(data, aes(fit, resid)) + 
+  geom_point(aes(color = season)) + 
+  theme_minimal() + 
+  theme(legend.position = c(0.15,0.23)) + 
+  theme(panel.border = element_rect(colour = "grey", fill=NA, size=1)) + 
+  geom_abline(intercept = 0, slope = 0, color = "black") + 
+  ylab('Standardized Residuals') + 
+  xlab('Fitted Value')
+```
+
+```{r }
+# OLS for registered rentals
+model_3 <- lm(registered ~ perceived_temp + perceived_temp2 + perceived_temp3 + days + perceived_temp*weatherBad + humidity + sqrt_windspeed + weatherBad + weatherMild + workingday1, data = Train_data %>% slice(-239, -358))
+stargazer::stargazer(model_3, type = "text", single.row = TRUE, header = FALSE, digits = 3, report = "vcstp", ci = TRUE, out = "stargazer_output2.html")
+
+# OLS for casual rentals
+model_4 <- lm(log(casual) ~ perceived_temp + perceived_temp2 + perceived_temp3 + perceived_temp*weatherBad + humidity + sqrt_windspeed + weatherBad + weatherMild + workingday1, data = Train_data %>% slice(-239, -358))
+stargazer::stargazer(model_4, type = "text", single.row = TRUE, header = FALSE, digits = 3, report = "vcstp", ci = TRUE, out = "stargazer_output3.html")
+```
+
+```{r }
+suppressWarnings({
+  # Diagnostic for registered rentals
+  standardized_residuals <- rstandard(model_3)
+  sqrt_standardized_residuals <- sqrt(abs(standardized_residuals))
+  fitted_values <- fitted(model_3)
+  qqnorm(standardized_residuals, main = "Standardized Residual Plot for OLS Model for Registered Rentals", col = 'steelblue2')
+  qqline(standardized_residuals, col = 'dodgerblue4')
+  plot(fitted_values, standardized_residuals, xlab = 'Fitted Value', ylab = 'Standardized Residuals', main = "Standardized Residual Plot for OLS Model for Registered Rentals", col = 'steelblue2')
+  abline(h = 0, col = 'dodgerblue4', lwd = 2)
+  
+  # Diagnostic for casual rentals
+  standardized_residuals <- rstandard(model_4)
+  sqrt_standardized_residuals <- sqrt(abs(standardized_residuals))
+  fitted_values <- fitted(model_4)
+  qqnorm(standardized_residuals, main = "Normal QQ Plot for OLS Model for Casual Rentals", col = 'steelblue2')
+  qqline(standardized_residuals, col = 'dodgerblue4')
+  plot(fitted_values, standardized_residuals, xlab = 'Fitted Value', ylab = 'Standardized Residuals', main = "Standardized Residual Plot for OLS Model for Casual Rentals", col = 'steelblue2')
+  abline(h = 0, col = 'dodgerblue4', lwd = 2)
+  
+  # Prediction
+  preds_ols <- predict(model_2, Test_data)
+  preds_combined <- predict(model_3, Test_data) + exp(predict(model_4, Test_data))
+  preds_lasso <- predict(lasso_model, as.matrix(X_test))
+  test <- bikedata %>% filter(yr == 1)
+  test$preds_lasso <- preds_lasso
+  test$preds_ols <- preds_ols
+  test$preds_combined <- preds_combined
+  test %>% group_by(week) %>% summarise(total_rentals = mean(total_rentals), preds_ols = mean(preds_ols), preds_combined = mean(preds_combined), preds_lasso = mean(preds_lasso), total_rentals = mean(total_rentals)) %>%
+  ggplot() + 
+    geom_line(aes(x = week, y = total_rentals, color = 'observed value')) + 
+    geom_point(aes(x = week, y = total_rentals, color = 'observed value')) + 
+    geom_line(aes(x = week, y = preds_ols, color = 'OLS(total rentals)')) + 
+    geom_point(aes(x = week, y = preds_ols, color = 'OLS(total rentals)')) + 
+    geom_point(aes(x = week, y = preds_lasso, color = 'Lasso(total rentals)')) + 
+    geom_line(aes(x = week, y = preds_lasso, color = 'Lasso(total rentals)')) + 
+    geom_point(aes(x = week, y = preds_combined, color = 'OLS(registered + casual rentals)')) + 
+    geom_line(aes(x = week, y = preds_combined, color = 'OLS(registered + casual rentals)')) +
+    scale_color_manual(values = c("observed value" = "black", "Lasso(total rentals)" = "dodgerblue4", "OLS(total rentals)" = "steelblue1", "OLS(registered + casual rentals)" = "grey")) +
+    theme_minimal() + theme(panel.border = element_rect(colour = "grey", fill=NA, size=1)) + ylab("Daily total rentals") + xlab("Weeks") + labs(title = "Title", color = "Legend") +
+    theme(plot.title = element_text(family = "Arial", size = 12), legend.position = c(0.55, 0.3))
+})
+```
+
+```{r }
+# Prediction residual plot
+fitted_values1 <- predict(lasso_model, as.matrix(X_test))
+fitted_values2 <- predict(model_2, X_test)
+fitted_values3 <- predict(model_3, X_test) + exp(predict(model_4, X_test))
+
+# Assume residuals1, residuals2, and residuals3 have different lengths
+residuals1 <- y_test - fitted_values1
+residuals2 <- y_test - fitted_values2
+residuals3 <- y_test - fitted_values3
+
+# Create data frames for each model's residuals and fitted values
+df1 <- data.frame(Fitted = fitted_values1, Residuals = residuals1, Model = "Lasso(total rentals)")
+df2 <- data.frame(Fitted = fitted_values2, Residuals = residuals2, Model = "OLS(total rentals)")
+df3 <- data.frame(Fitted = fitted_values3, Residuals = residuals3, Model = "OLS(registered + casual rentals)")
+
+# Combine the data frames into a single long-format data frame
+residuals_long <- rbind(df1, df2, df3)
+
+# Create the residual plot for three models with different colors
+ggplot(residuals_long, aes(x = Fitted, y = Residuals, color = Model, shape = Model)) +
+  geom_point(alpha = 0.5, size = 2) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "black", size = 0.5) +
+  theme_minimal() + 
+  labs(title = "Title", x = "Fitted Values", y = "Residuals", color = "Legend", shape = "Legend") +
+  theme(panel.border = element_rect(colour = "grey", fill=NA, size=1)) + 
+  theme(legend.position = c(0.17,0.85)) + 
+  scale_shape_manual(values = c(16, 17, 18))
+```
+
+
+```{r }
+#scatterplot bewtear predicted and observed value
+# Create data frames for each model's true values and fitted values
+df1 <- data.frame(True = y_test, Fitted = fitted_values1, Model = "Lasso(total rentals)")
+# Correct the column names and the data frame
+colnames(df1) <- c('True', 'Fitted', 'Model')
+df2 <- data.frame(True = y_test, Fitted = fitted_values2, Model = "OLS(total rentals)")
+df3 <- data.frame(True = y_test, Fitted = fitted_values3, Model = "OLS(registered + casual rentals)")
+
+# Combine the data frames into a single long-format data frame
+values_long <- rbind(df1, df2, df3)
+
+# Create the fitted vs. true plot for three models with different colors
+ggplot(values_long, aes(x = Fitted, y = True, color = Model, shape = Model)) +
+  geom_point(alpha = 0.5, size = 2) +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "black", size = 0.5) +
+  theme_minimal() +
+  labs(title = "Title", x = "True Values", y = "Fitted Values", color = "Legend", shape = "Legend") +
+  scale_shape_manual(values = c(16, 17, 18)) +
+  theme(panel.border = element_rect(colour = "grey", fill=NA, size=1)) + 
+  theme(legend.position = c(0.16,0.77)) +
+  scale_shape_manual(values = c(16, 17, 18))
+```
+
+```{r }
+# Training residual plot
+fitted_values1 <- predict(lasso_model, as.matrix(X_train))
+fitted_values2 <- model_2$fitted.values
+fitted_values3 <- model_3$fitted.values + exp(model_4$fitted.values)
+residuals1 <- y_train - fitted_values1
+residuals2 <- residuals(model_2)
+residuals3 <- (Train_data %>% slice(-c(239,358)))$total_rentals - fitted_values3
+
+df1 <- data.frame(Fitted = fitted_values1, Residuals = residuals1, Model = "Lasso(total rentals)")
+colnames(df1) <- c("Fitted", "Residuals", "Model")
+df2 <- data.frame(Fitted = fitted_values2, Residuals = residuals2, Model = "OLS(total rentals)")
+df3 <- data.frame(Fitted = fitted_values3, Residuals = residuals3, Model = "OLS(registered + casual rentals)")
+
+residuals_long <- rbind(df1, df2, df3)
+
+ggplot(residuals_long, aes(x = Fitted, y = Residuals, color = Model, shape = Model)) +
+  geom_point(alpha = 0.5, size = 2) + 
+  geom_hline(yintercept= 0, linetype = "dashed", color = "black", size = 0.5) + 
+  theme_minimal() + 
+  labs(title = "Title", x = "Fitted Values", y = "Residuals", color = "Legend", shape = "Legend") +
+  theme(panel.border = element_rect(colour = "grey", fill=NA, size=1)) +
+  theme(legend.position = c(0.17,0.85)) +
+  scale_shape_manual(values = c(16, 17, 18))
+
+# Plot of bikedata
+ggplot(bikedata, aes(x = dteday, y = total_rentals)) +
+  geom_point(aes(color = perceived_temp), alpha = 0.9) +
+  geom_smooth(color = "black", alpha = 0.5) +
+  theme_minimal() +
+  labs(title = "Title", y = 'Daily Total Rentals', x = 'Date', color = 'Perceived Temp (°C)', shape = 'Weather') +
+  theme(panel.border = element_rect(colour = "grey", fill=NA, size=1)) +
+  theme(legend.position = c(0.18,0.75))
+```
+
+```{r }
+data_weekly_1 <- bikedata %>% filter(yr ==0)
+data_weekly_2 <- bikedata %>% filter(yr == 1)
+data_weekly_2$mnth <- data_weekly_2$mnth + 12
+data_weekly <- rbind(data_weekly_1,data_weekly_2)
+data_weekly <- data_weekly[,c('casual', 'registered', 'mnth')]
+data_long <- gather(data_weekly, key = "variable", value = "value", -mnth)
+
+ggplot(data_long, aes(x=as.factor(mnth), y=value)) +
+  geom_boxplot(aes(fill = variable)) +
+  xlab("month") +
+  ylab("daily total rentals") +
+  theme_minimal() +
+  scale_fill_manual(values = c("registered" = "steelblue2", "casual" = "dodgerblue4")) +
+  ggtitle("Title") +
+  theme(panel.border = element_rect(colour = "grey", fill=NA, size=1)) +
+  theme(legend.position = c(0.16,0.77))
+
+# Validation
+preds_combined <- predict(model_3,X_test) + exp(predict(model_4,X_test))
+preds_lasso <- predict(lasso_model, as.matrix(X_test))
+preds_ols <- predict(model_2,X_test)
+
+# Root MSE
+print(sqrt(mean((y_test - preds_lasso)**2)))
+print(sqrt(mean((y_test - preds_ols)**2)))
+print(sqrt(mean((y_test - preds_combined)**2)))
+
+# Relative MSE
+print(mean((y_test - preds_lasso)**2) / mean(y_test**2))
+print(mean((y_test - preds_ols)**2) / mean(y_test**2))
+print(mean((y_test - preds_combined)**2) / mean(y_test**2))
+
+# Autocorrelation Function (ACF)
+acf(y_train, lag.max = 20, main = 'Autocorrelation Function (ACF)')
+```
+
